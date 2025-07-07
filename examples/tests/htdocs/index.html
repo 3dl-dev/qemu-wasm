@@ -1,0 +1,63 @@
+<html>
+  <head>
+    <title>QEMU on browser</title>
+    <link rel="stylesheet" href="./vendor/xterm.css" />
+  </head>
+  <body>
+    <div id="terminal"></div>
+    <script>let Module = {};</script>
+    <script type="module">
+      import 'https://unpkg.com/@xterm/xterm@5.5.0/lib/xterm.js';
+      import 'https://unpkg.com/xterm-pty/index.js';
+      import './module.js'
+      import initEmscriptenModule from './out.js';
+      import preloadModule from './load.mjs';
+
+      let xterm = new Terminal();
+      xterm.open(document.getElementById("terminal"));
+
+      const { master, slave } = openpty();
+
+      window.xterm = xterm;
+      window.hookOutput = (f) => {
+          let orgWrite = slave.write;
+          slave.write = (c) => {
+              f(c);
+              orgWrite.apply(slave, [c]);
+          };
+      }
+      window.input = (c) => {
+          let decodedChar = atob(c);
+          xterm.input(decodedChar);
+      }
+      
+      xterm.loadAddon(master);
+
+      Module.pty = slave;
+      Module['mainScriptUrlOrBlob'] = location.origin + "/out.js";
+
+      var readableCallbacks = [];
+      Module.pty.onReadable(() => {
+          readableCallbacks.forEach(cb => cb());
+          readableCallbacks = [];
+      });
+      Module['preRun'] = [(Module) => {
+          Module['TTY'].stream_ops.poll = (stream, timeout, notifyCallback) => {
+              if (Module.pty.readable) {
+                  return 1;
+              }
+              if (notifyCallback != null) {
+                  notifyCallback.registerCleanupFunc(() => {
+                      const i = readableCallbacks.indexOf(notifyCallback);
+                      if (i != -1) readableCallbacks.splice(i, 1);
+                  });
+                  readableCallbacks.push(notifyCallback);
+              }
+              return 0;
+          };
+      }];
+      preloadModule(Module);
+      initEmscriptenModule(Module);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,38 @@
+set timeout 2000
+set args $argv
+
+spawn {*}$args
+set pid [exp_pid]
+expect {
+    "Please press Enter to activate this console." {
+        # Continue execution normally
+    }
+    eof {
+        puts "Process exited unexpectedly. Exiting..."
+        exit 1
+    }
+    timeout {
+        puts "Boot timeout. Exiting..."
+        close
+        wait
+        exit 1
+    }
+}
+send "\r"
+
+send "nproc\r"
+expect {
+    "4" {
+        # Continue execution normally
+    }
+    timeout {
+        puts "Timeout occurred. Exiting..."
+        close
+        wait
+        exit 1
+    }
+}
+
+exec kill -sSIGINT $pid
+expect eof
+wait
