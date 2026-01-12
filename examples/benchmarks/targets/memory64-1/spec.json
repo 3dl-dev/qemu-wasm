@@ -1,0 +1,6 @@
+{
+  "name": "memory64-1",
+  "cpu": "wasm64",
+  "memory64": "1",
+  "extra_configure_args": ""
+}

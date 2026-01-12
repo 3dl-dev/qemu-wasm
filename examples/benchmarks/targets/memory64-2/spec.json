@@ -1,0 +1,6 @@
+{
+  "name": "memory64-2",
+  "cpu": "wasm64",
+  "memory64": "2",
+  "extra_configure_args": "--wasm64-32bit-address-limit"
+}

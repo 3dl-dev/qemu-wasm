@@ -1,0 +1,6 @@
+{
+  "name": "tcg-vaddr-bits",
+  "cpu": "wasm32",
+  "memory64": "0",
+  "extra_configure_args": ""
+}

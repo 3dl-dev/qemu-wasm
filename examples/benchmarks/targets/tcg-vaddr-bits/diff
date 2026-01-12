@@ -1,0 +1,228 @@
+diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
+index c30073326a..dde901227a 100644
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -107,13 +107,13 @@ static inline uint64_t tlb_read_idx(const CPUTLBEntry *entry,
+ {
+     /* Do not rearrange the CPUTLBEntry structure members. */
+     QEMU_BUILD_BUG_ON(offsetof(CPUTLBEntry, addr_read) !=
+-                      MMU_DATA_LOAD * sizeof(uintptr_t));
++                      MMU_DATA_LOAD * sizeof(tlb_addr));
+     QEMU_BUILD_BUG_ON(offsetof(CPUTLBEntry, addr_write) !=
+-                      MMU_DATA_STORE * sizeof(uintptr_t));
++                      MMU_DATA_STORE * sizeof(tlb_addr));
+     QEMU_BUILD_BUG_ON(offsetof(CPUTLBEntry, addr_code) !=
+-                      MMU_INST_FETCH * sizeof(uintptr_t));
++                      MMU_INST_FETCH * sizeof(tlb_addr));
+ 
+-    const uintptr_t *ptr = &entry->addr_idx[access_type];
++    const tlb_addr *ptr = &entry->addr_idx[access_type];
+     /* ofs might correspond to .addr_write, so use qatomic_read */
+     return qatomic_read(ptr);
+ }
+diff --git a/include/exec/helper-head.h.inc b/include/exec/helper-head.h.inc
+index 5b248fd713..cbeb7bc371 100644
+--- a/include/exec/helper-head.h.inc
++++ b/include/exec/helper-head.h.inc
+@@ -58,16 +58,17 @@
+ # define dh_ctype_tl target_ulong
+ #endif /* COMPILING_PER_TARGET */
+ 
+-#if __SIZEOF_POINTER__ == 4
++#if TCG_VADDR_BITS == 32
+ # define dh_alias_vaddr i32
+ # define dh_typecode_vaddr dh_typecode_i32
+-#elif __SIZEOF_POINTER__ == 8
++# define dh_ctype_vaddr uint32_t
++#elif TCG_VADDR_BITS == 64
+ # define dh_alias_vaddr i64
+ # define dh_typecode_vaddr dh_typecode_i64
++# define dh_ctype_vaddr uint64_t
+ #else
+ # error "sizeof pointer is different from {4,8}"
+-#endif /* __SIZEOF_POINTER__ */
+-# define dh_ctype_vaddr uintptr_t
++#endif /* TCG_VADDR_BITS */
+ 
+ /* We can't use glue() here because it falls foul of C preprocessor
+    recursive expansion rules.  */
+diff --git a/include/exec/tlb-common.h b/include/exec/tlb-common.h
+index 03b5a8ffc7..87f8beab9a 100644
+--- a/include/exec/tlb-common.h
++++ b/include/exec/tlb-common.h
+@@ -19,14 +19,22 @@
+ #ifndef EXEC_TLB_COMMON_H
+ #define EXEC_TLB_COMMON_H 1
+ 
+-#define CPU_TLB_ENTRY_BITS (HOST_LONG_BITS == 32 ? 4 : 5)
++#if TCG_VADDR_BITS == 32
++#define CPU_TLB_ENTRY_BITS 4
++typedef uint32_t tlb_addr;
++#elif TCG_VADDR_BITS == 64
++#define CPU_TLB_ENTRY_BITS 5
++typedef uint64_t tlb_addr;
++#else
++#error Unknown pointer size
++#endif
+ 
+ /* Minimalized TLB entry for use by TCG fast path. */
+ typedef union CPUTLBEntry {
+     struct {
+-        uintptr_t addr_read;
+-        uintptr_t addr_write;
+-        uintptr_t addr_code;
++        tlb_addr addr_read;
++        tlb_addr addr_write;
++        tlb_addr addr_code;
+         /*
+          * Addend to virtual address to get host address.  IO accesses
+          * use the corresponding iotlb value.
+@@ -37,7 +45,7 @@ typedef union CPUTLBEntry {
+      * Padding to get a power of two size, as well as index
+      * access to addr_{read,write,code}.
+      */
+-    uintptr_t addr_idx[(1 << CPU_TLB_ENTRY_BITS) / sizeof(uintptr_t)];
++    tlb_addr addr_idx[(1 << CPU_TLB_ENTRY_BITS) / sizeof(tlb_addr)];
+ } CPUTLBEntry;
+ 
+ QEMU_BUILD_BUG_ON(sizeof(CPUTLBEntry) != (1 << CPU_TLB_ENTRY_BITS));
+diff --git a/include/exec/vaddr.h b/include/exec/vaddr.h
+index 28bec632fb..ff6184a31e 100644
+--- a/include/exec/vaddr.h
++++ b/include/exec/vaddr.h
+@@ -6,15 +6,25 @@
+ /**
+  * vaddr:
+  * Type wide enough to contain any #target_ulong virtual address.
+- * We do not support 64-bit guest on 32-host and detect at configure time.
+- * Therefore, a host pointer width will always fit a guest pointer.
+  */
+-typedef uintptr_t vaddr;
+-#define VADDR_PRId PRIdPTR
+-#define VADDR_PRIu PRIuPTR
+-#define VADDR_PRIo PRIoPTR
+-#define VADDR_PRIx PRIxPTR
+-#define VADDR_PRIX PRIXPTR
+-#define VADDR_MAX UINTPTR_MAX
++#if TCG_VADDR_BITS == 32
++typedef uint32_t vaddr;
++#define VADDR_PRId PRId32
++#define VADDR_PRIu PRIu32
++#define VADDR_PRIo PRIo32
++#define VADDR_PRIx PRIx32
++#define VADDR_PRIX PRIX32
++#define VADDR_MAX UINT32_MAX
++#elif TCG_VADDR_BITS == 64
++typedef uint64_t vaddr;
++#define VADDR_PRId PRId64
++#define VADDR_PRIu PRIu64
++#define VADDR_PRIo PRIo64
++#define VADDR_PRIx PRIx64
++#define VADDR_PRIX PRIX64
++#define VADDR_MAX UINT64_MAX
++#else
++#error Unknown pointer size
++#endif
+ 
+ #endif
+diff --git a/include/qemu/atomic.h b/include/qemu/atomic.h
+index f80cba24cf..76a8fbcd8c 100644
+--- a/include/qemu/atomic.h
++++ b/include/qemu/atomic.h
+@@ -56,6 +56,7 @@
+  */
+ #define signal_barrier()    __atomic_signal_fence(__ATOMIC_SEQ_CST)
+ 
++#ifndef EMSCRIPTEN
+ /*
+  * Sanity check that the size of an atomic operation isn't "overly large".
+  * Despite the fact that e.g. i686 has 64-bit atomic operations, we do not
+@@ -63,6 +64,9 @@
+  * bit of sanity checking that other 32-bit hosts might build.
+  */
+ #define ATOMIC_REG_SIZE  sizeof(void *)
++#else
++#define ATOMIC_REG_SIZE  8 /* wasm supports 64bit atomics */
++#endif
+ 
+ /* Weak atomic operations prevent the compiler moving other
+  * loads/stores past the atomic operation load/store. However there is
+diff --git a/include/tcg/tcg.h b/include/tcg/tcg.h
+index a6d9aa50d4..1f5fe082f9 100644
+--- a/include/tcg/tcg.h
++++ b/include/tcg/tcg.h
+@@ -218,13 +218,13 @@ typedef struct TCGv_ptr_d *TCGv_ptr;
+ typedef struct TCGv_vec_d *TCGv_vec;
+ typedef TCGv_ptr TCGv_env;
+ 
+-#if __SIZEOF_POINTER__ == 4
++#if TCG_VADDR_BITS == 32
+ typedef TCGv_i32 TCGv_vaddr;
+-#elif __SIZEOF_POINTER__ == 8
++#elif TCG_VADDR_BITS == 64
+ typedef TCGv_i64 TCGv_vaddr;
+ #else
+ # error "sizeof pointer is different from {4,8}"
+-#endif /* __SIZEOF_POINTER__ */
++#endif /* TCG_VADDR_BITS */
+ 
+ /* call flags */
+ /* Helper does not read globals (either directly or through an exception). It
+diff --git a/meson.build b/meson.build
+index db87358d62..65e00a232f 100644
+--- a/meson.build
++++ b/meson.build
+@@ -3240,6 +3240,9 @@ endif
+ 
+ # Detect host pointer size for the target configuration loop.
+ host_long_bits = cc.sizeof('void *') * 8
++tcg_vaddr_bits = host_arch == 'wasm32' ? 64 : host_long_bits
++
++config_host_data.set('TCG_VADDR_BITS', tcg_vaddr_bits)
+ 
+ # Detect if ConvertStringToBSTR has been defined in _com_util namespace
+ if host_os == 'windows'
+@@ -3352,7 +3355,7 @@ foreach target : target_dirs
+   target_kconfig = []
+   foreach sym: accelerators
+     # Disallow 64-bit on 32-bit emulation and virtualization
+-    if host_long_bits < config_target['TARGET_LONG_BITS'].to_int()
++    if tcg_vaddr_bits < config_target['TARGET_LONG_BITS'].to_int()
+       continue
+     endif
+     if sym == 'CONFIG_TCG' or target in accelerator_targets.get(sym, [])
+diff --git a/tcg/tci.c b/tcg/tci.c
+index e15d4e8e08..9493bc1957 100644
+--- a/tcg/tci.c
++++ b/tcg/tci.c
+@@ -367,10 +367,12 @@ uintptr_t QEMU_DISABLE_CFI tcg_qemu_tb_exec(CPUArchState *env,
+                 ffi_cif *cif;
+                 void *func;
+                 unsigned i, s, n;
++                tcg_target_ulong *data;
+ 
+                 tci_args_nl(insn, tb_ptr, &len, &ptr);
+-                func = ((void **)ptr)[0];
+-                cif = ((void **)ptr)[1];
++                data = ptr;
++                func = (void *)data[0];
++                cif = (void *)data[1];
+ 
+                 n = cif->nargs;
+                 for (i = s = 0; i < n; ++i) {
+diff --git a/tcg/tci/tcg-target-reg-bits.h b/tcg/tci/tcg-target-reg-bits.h
+index dcb1a203f8..0e5db44e22 100644
+--- a/tcg/tci/tcg-target-reg-bits.h
++++ b/tcg/tci/tcg-target-reg-bits.h
+@@ -7,9 +7,9 @@
+ #ifndef TCG_TARGET_REG_BITS_H
+ #define TCG_TARGET_REG_BITS_H
+ 
+-#if UINTPTR_MAX == UINT32_MAX
++#if TCG_VADDR_BITS == 32
+ # define TCG_TARGET_REG_BITS 32
+-#elif UINTPTR_MAX == UINT64_MAX
++#elif TCG_VADDR_BITS == 64
+ # define TCG_TARGET_REG_BITS 64
+ #else
+ # error Unknown pointer size for tci target
