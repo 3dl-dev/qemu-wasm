@@ -789,7 +789,7 @@ static inline int platform_does_not_support_system(const char *command)
  * If the load average was unobtainable, -1 is returned
  */
 #ifndef HAVE_GETLOADAVG_FUNCTION
-static inline int getloadavg(double loadavg[], int nelem)
+int getloadavg(double loadavg[], int nelem)
 {
     return -1;
 }
