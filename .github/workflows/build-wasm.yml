@@ -53,7 +53,7 @@ jobs:
           # link, after every flag configure passes, and the last -s wins. emcc
           # appends EMCC_CFLAGS after all other arguments, so the requested pool
           # set there is the one the link uses.
-          docker exec -e EMCC_CFLAGS="-sPTHREAD_POOL_SIZE=$POOL -sWASMFS" qwbuild emmake make -j"$(nproc)" qemu-system-x86_64
+          docker exec -e EMCC_CFLAGS="-sPTHREAD_POOL_SIZE=$POOL -sWASMFS -DHAVE_GETLOADAVG_FUNCTION" qwbuild emmake make -j"$(nproc)" qemu-system-x86_64
           # Which -s settings did the FINAL link really get? (the pool once came out 4)
           docker exec qwbuild emcc --version | head -1
           docker exec qwbuild sh -c 'grep -rIn "PTHREAD_POOL" /build/target 2>/dev/null | head -20; echo "pkg-config glib: $(PKG_CONFIG_PATH=/build/target/lib/pkgconfig pkg-config --static --libs glib-2.0)"' || true
