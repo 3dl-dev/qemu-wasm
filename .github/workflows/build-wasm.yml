@@ -1,26 +1,54 @@
 name: build-wasm
+# Build qemu-system-x86_64.wasm for the OpenVMX in-browser demo.
+#
+# PTHREAD_POOL_SIZE is a BUILD INPUT and a LINK setting. Emscripten applies -s
+# settings when it links; the earlier build passed -sPTHREAD_POOL_SIZE=8 only in
+# --extra-cflags, so the link used the default and the release labelled "pool8"
+# shipped glue preallocating 4 workers. Past 4 pthreads (main + RCU + vCPU +
+# block-I/O workers) QEMU deadlocks spawning a worker through its own blocked
+# main thread, and the whole emulator freezes at a random point (rd vms-e79).
+# The "glue says what we asked for" step fails the build if the built out.js
+# does not preallocate exactly the requested pool, so a label can never again
+# disagree with the bytes.
 on:
   workflow_dispatch:
+    inputs:
+      pool:
+        description: 'PTHREAD_POOL_SIZE (pthread workers preallocated by the glue)'
+        required: true
+        default: '16'
+      publish:
+        description: 'create the GitHub Release wasm-classic-pool<pool> with the three assets'
+        type: boolean
+        default: false
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    env:
+      POOL: ${{ inputs.pool }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: false
+      - name: The pool is a positive integer
+        run: |
+          case "$POOL" in ''|*[!0-9]*) echo "pool must be a positive integer, got '$POOL'"; exit 1 ;; esac
+          [ "$POOL" -ge 1 ]
       - name: Free runner disk
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android "/opt/hostedtoolcache/CodeQL" || true
           df -h /
       - name: Build emsdk + deps image
         run: docker build -t buildqemu - < Dockerfile
-      - name: Configure + make qemu-system-x86_64.wasm (with PTHREAD_POOL_SIZE fix)
+      - name: Configure + make qemu-system-x86_64.wasm (PTHREAD_POOL_SIZE at link time)
         run: |
           set -x
           docker run --rm -d --name qwbuild -v "$PWD":/qemu/ buildqemu
-          EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=8 -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/build/node_modules/xterm-pty/emscripten-pty.js -sASYNCIFY_IMPORTS=ffi_call_js"
-          docker exec qwbuild emconfigure /qemu/configure --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
+          EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=$POOL -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/build/node_modules/xterm-pty/emscripten-pty.js -sASYNCIFY_IMPORTS=ffi_call_js"
+          docker exec qwbuild emconfigure /qemu/configure --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" --extra-ldflags="-sPTHREAD_POOL_SIZE=$POOL -sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
           docker exec qwbuild emmake make -j"$(nproc)" qemu-system-x86_64
           mkdir -p out
           docker cp qwbuild:/build/qemu-system-x86_64.wasm out/
@@ -28,7 +56,25 @@ jobs:
           docker cp qwbuild:/build/qemu-system-x86_64.worker.js out/
           docker kill qwbuild || true
           ls -la out
+      - name: The built glue preallocates exactly the requested pool
+        run: |
+          set -euo pipefail
+          GOT=$(grep -o 'var pthreadPoolSize = [0-9]*' out/out.js | grep -o '[0-9]*$' || true)
+          echo "requested pool $POOL, built glue preallocates '${GOT:-<none>}'"
+          [ "$GOT" = "$POOL" ] || { echo "built out.js does not preallocate $POOL pthread workers"; exit 1; }
+          sha256sum out/* | tee out/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: qemu-wasm-x86_64-worker
+          name: qemu-wasm-x86_64-worker-pool${{ inputs.pool }}
           path: out/
+      - name: Publish wasm-classic-pool${{ inputs.pool }}
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          T="wasm-classic-pool$POOL"
+          gh release create "$T" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "qemu-wasm x86_64 (classic, PROXY_TO_PTHREAD, pool=$POOL)" \
+            --notes "Built by build-wasm.yml run ${{ github.run_id }} from ${{ github.sha }}. PTHREAD_POOL_SIZE=$POOL at link time; the build verified out.js preallocates $POOL workers. SHA256SUMS attached." \
+            out/qemu-system-x86_64.wasm out/out.js out/qemu-system-x86_64.worker.js out/SHA256SUMS
