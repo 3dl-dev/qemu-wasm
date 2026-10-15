@@ -762,6 +762,11 @@ int qemu_timeout_ns_to_ms(int64_t ns);
  */
 int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout);
 
+#ifdef __EMSCRIPTEN__
+/* Wake a qemu_poll_ns() that is waiting (Emscripten's poll cannot block). */
+void qemu_poll_kick(void);
+#endif
+
 /**
  * qemu_soonest_timeout:
  * @timeout1: first timeout in nanoseconds (or -1 for infinite)
