@@ -122,6 +122,13 @@ RUN sed -i -E "/#define HAVE_KQUEUE 1/d" ./_build/config.h
 RUN sed -i -E "/#define HAVE_POSIX_SPAWN 1/d" ./_build/config.h
 RUN sed -i -E "/#define HAVE_FALLOCATE 1/d" ./_build/config.h
 RUN meson install -C _build
+# glib's pkg-config Libs carry -sPTHREAD_POOL_SIZE=4. pkg-config puts them on
+# QEMU's final link AFTER our own flags, so they won: every release linked a
+# 4-worker pool whatever the build asked for, and qemu-wasm deadlocked when it
+# needed a fifth pthread (OpenVMX rd vms-e79). The pool is the build's input
+# (build-wasm.yml), so no dependency may set it.
+RUN sed -i -E 's/[[:space:]]*-sPTHREAD_POOL_SIZE=[0-9]+//g' $TARGET/lib/pkgconfig/*.pc && \
+    ! grep -n 'PTHREAD_POOL_SIZE' $TARGET/lib/pkgconfig/*.pc
 
 FROM build-base AS pixman-emscripten-dev
 ARG PIXMAN_VERSION
