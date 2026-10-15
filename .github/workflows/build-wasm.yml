@@ -49,11 +49,11 @@ jobs:
           docker run --rm -d --name qwbuild -v "$PWD":/qemu/ buildqemu
           EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=$POOL -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/build/node_modules/xterm-pty/emscripten-pty.js -sASYNCIFY_IMPORTS=ffi_call_js"
           docker exec qwbuild emconfigure /qemu/configure --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" --extra-ldflags="-sPTHREAD_POOL_SIZE=$POOL -sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
-          # Meson's Emscripten threads dependency adds -sPTHREAD_POOL_SIZE=<c_thread_count>
-          # to the final link, and c_thread_count defaults to 4 -- after our flags,
-          # so it won. Set it to the requested pool.
-          docker exec -w /build qwbuild sh -c "if [ -x pyvenv/bin/meson ]; then M=pyvenv/bin/meson; else M=meson; fi; \$M configure . -Dc_thread_count=$POOL -Dcpp_thread_count=$POOL"
-          docker exec qwbuild emmake make -j"$(nproc)" qemu-system-x86_64
+          # Meson turns glib's "-pthread" into -sPTHREAD_POOL_SIZE=4 on the final
+          # link, after every flag configure passes, and the last -s wins. emcc
+          # appends EMCC_CFLAGS after all other arguments, so the requested pool
+          # set there is the one the link uses.
+          docker exec -e EMCC_CFLAGS="-sPTHREAD_POOL_SIZE=$POOL" qwbuild emmake make -j"$(nproc)" qemu-system-x86_64
           # Which -s settings did the FINAL link really get? (the pool once came out 4)
           docker exec qwbuild emcc --version | head -1
           docker exec qwbuild sh -c 'grep -rIn "PTHREAD_POOL" /build/target 2>/dev/null | head -20; echo "pkg-config glib: $(PKG_CONFIG_PATH=/build/target/lib/pkgconfig pkg-config --static --libs glib-2.0)"' || true
