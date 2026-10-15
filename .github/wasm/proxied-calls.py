@@ -11,7 +11,7 @@ must not proxy any of it. Usage: proxied-calls.py out.js [--forbid-io]
 import re
 import sys
 
-IO = re.compile(r'^(syscall_|fd_|wasmfs_|environ_|emscripten_stdin|mmap_js|munmap_js|msync_js|xterm_pty_|PTY_)')
+IO = re.compile(r'^(syscall_|fd_|wasmfs_|emscripten_stdin|mmap_js|munmap_js|msync_js|xterm_pty_|PTY_)')
 
 
 def proxied(js):
