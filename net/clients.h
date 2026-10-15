@@ -34,6 +34,9 @@ int net_init_slirp(const Netdev *netdev, const char *name,
                    NetClientState *peer, Error **errp);
 #endif
 
+int net_init_wasmring(const Netdev *netdev, const char *name,
+                      NetClientState *peer, Error **errp);
+
 int net_init_hubport(const Netdev *netdev, const char *name,
                      NetClientState *peer, Error **errp);
 

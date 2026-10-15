@@ -317,6 +317,7 @@ void net_hub_check_clients(void)
             case NET_CLIENT_DRIVER_DGRAM:
             case NET_CLIENT_DRIVER_VDE:
             case NET_CLIENT_DRIVER_VHOST_USER:
+            case NET_CLIENT_DRIVER_WASMRING:
                 has_host_dev = 1;
                 break;
             default:
