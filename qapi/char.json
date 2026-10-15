@@ -468,6 +468,9 @@
 #
 # @memory: Since 1.5
 #
+# @wasmring: qemu-wasm only: bytes cross wasm-ring buffers shared
+#     with JavaScript (chardev/char-wasmring.c)
+#
 # Since: 1.4
 ##
 { 'enum': 'ChardevBackendKind',
@@ -492,6 +495,7 @@
             { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' },
             'vc',
             'ringbuf',
+            'wasmring',
             # next one is just for compatibility
             'memory' ] }
 
@@ -638,6 +642,7 @@
                       'if': 'CONFIG_DBUS_DISPLAY' },
             'vc': 'ChardevVCWrapper',
             'ringbuf': 'ChardevRingbufWrapper',
+            'wasmring': 'ChardevCommonWrapper',
             # next one is just for compatibility
             'memory': 'ChardevRingbufWrapper' } }
 

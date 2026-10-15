@@ -11,6 +11,9 @@ endif
 util_ss.add(when: linux_io_uring, if_true: files('fdmon-io_uring.c'))
 util_ss.add(when: 'CONFIG_POSIX', if_true: files('compatfd.c'))
 util_ss.add(when: 'CONFIG_POSIX', if_true: files('event_notifier-posix.c'))
+if cpu == 'wasm32'
+  util_ss.add(files('wasm-fcntl.c'))
+endif
 util_ss.add(when: 'CONFIG_POSIX', if_true: files('mmap-alloc.c'))
 freebsd_dep = []
 if targetos == 'freebsd'

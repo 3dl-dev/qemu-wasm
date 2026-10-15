@@ -435,6 +435,11 @@ endif
 
 add_global_arguments(qemu_common_flags, native: false, language: all_languages)
 add_global_link_arguments(qemu_ldflags, native: false, language: all_languages)
+if cpu == 'wasm32'
+  # util/wasm-fcntl.c: WASMFS rejects fcntl(F_SETFL, O_NONBLOCK) although its
+  # I/O never blocks; only the final link wraps fcntl, never a configure check.
+  add_project_link_arguments('-Wl,--wrap=fcntl', native: false, language: all_languages)
+endif
 
 # Collect warnings that we want to enable
 

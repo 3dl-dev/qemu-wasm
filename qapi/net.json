@@ -685,6 +685,16 @@
     '*remote': 'SocketAddress' } }
 
 ##
+# @NetdevWasmringOptions:
+#
+# The wasmring netdev has no options; JavaScript learns where its
+# rings live from Module.ovmxRing.
+#
+# Since: 8.2
+##
+{ 'struct': 'NetdevWasmringOptions', 'data': {} }
+
+##
 # @NetClientDriver:
 #
 # Available netdev drivers.
@@ -697,13 +707,15 @@
 # @stream: since 7.2
 # @dgram: since 7.2
 # @af-xdp: since 8.2
+# @wasmring: qemu-wasm only: frames cross wasm-ring buffers shared
+#     with JavaScript (net/wasmring.c)
 #
 # Since: 2.7
 ##
 { 'enum': 'NetClientDriver',
   'data': [ 'none', 'nic', 'user', 'tap', 'l2tpv3', 'socket', 'stream',
             'dgram', 'vde', 'bridge', 'hubport', 'netmap', 'vhost-user',
-            'vhost-vdpa',
+            'vhost-vdpa', 'wasmring',
             { 'name': 'af-xdp', 'if': 'CONFIG_AF_XDP' },
             { 'name': 'vmnet-host', 'if': 'CONFIG_VMNET' },
             { 'name': 'vmnet-shared', 'if': 'CONFIG_VMNET' },
@@ -739,6 +751,7 @@
                   'if': 'CONFIG_AF_XDP' },
     'vhost-user': 'NetdevVhostUserOptions',
     'vhost-vdpa': 'NetdevVhostVDPAOptions',
+    'wasmring': 'NetdevWasmringOptions',
     'vmnet-host': { 'type': 'NetdevVmnetHostOptions',
                     'if': 'CONFIG_VMNET' },
     'vmnet-shared': { 'type': 'NetdevVmnetSharedOptions',

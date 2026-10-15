@@ -14,6 +14,7 @@
 #include "qemu/cutils.h"
 #include "qemu/event_notifier.h"
 #include "qemu/main-loop.h"
+#include "qemu/timer.h"
 
 #ifdef CONFIG_EVENTFD
 #include <sys/eventfd.h>
@@ -118,6 +119,9 @@ int event_notifier_set(EventNotifier *e)
     if (ret < 0 && errno != EAGAIN) {
         return -errno;
     }
+#ifdef __EMSCRIPTEN__
+    qemu_poll_kick();
+#endif
     return 0;
 }
 

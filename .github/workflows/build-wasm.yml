@@ -10,6 +10,14 @@ name: build-wasm
 # The "glue says what we asked for" step fails the build if the built out.js
 # does not preallocate exactly the requested pool, so a label can never again
 # disagree with the bytes.
+#
+# FILESYSTEM is the second build input. memfs is Emscripten's JS filesystem:
+# every file, socket and tty syscall a QEMU pthread makes is proxied to the
+# runtime thread, and a busy or parked runtime thread freezes disk I/O
+# (rd vms-e79). wasmfs keeps file I/O in Wasm on the calling thread; WASMFS
+# has no sockets and no pollable stdin, so that build drives the console and
+# the NIC through the wasmring chardev/netdev (include/qemu/wasm-ring.h) and
+# the "no I/O proxied" step fails it if the glue proxies any I/O.
 on:
   workflow_dispatch:
     inputs:
@@ -17,8 +25,13 @@ on:
         description: 'PTHREAD_POOL_SIZE (pthread workers preallocated by the glue)'
         required: true
         default: '16'
+      fs:
+        description: 'filesystem: memfs (JS FS, proxied I/O) or wasmfs (no proxying; wasmring console + NIC)'
+        type: choice
+        options: [memfs, wasmfs]
+        default: memfs
       publish:
-        description: 'create the GitHub Release wasm-classic-pool<pool> with the three assets'
+        description: 'create the GitHub Release (wasm-classic-pool<pool>, or wasm-wasmfs-pool<pool>) with the three assets'
         type: boolean
         default: false
 permissions:
@@ -29,6 +42,7 @@ jobs:
     timeout-minutes: 240
     env:
       POOL: ${{ inputs.pool }}
+      FS: ${{ inputs.fs || 'memfs' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +51,9 @@ jobs:
         run: |
           case "$POOL" in ''|*[!0-9]*) echo "pool must be a positive integer, got '$POOL'"; exit 1 ;; esac
           [ "$POOL" -ge 1 ]
+      - name: The filesystem is memfs or wasmfs
+        run: |
+          case "$FS" in memfs|wasmfs) ;; *) echo "fs must be memfs or wasmfs, got '$FS'"; exit 1 ;; esac
       - name: Free runner disk
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android "/opt/hostedtoolcache/CodeQL" || true
@@ -47,18 +64,30 @@ jobs:
         run: |
           set -x
           docker run --rm -d --name qwbuild -v "$PWD":/qemu/ buildqemu
-          EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=$POOL -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc --js-library=/build/node_modules/xterm-pty/emscripten-pty.js -sASYNCIFY_IMPORTS=ffi_call_js"
-          docker exec qwbuild emconfigure /qemu/configure --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" --extra-ldflags="-sPTHREAD_POOL_SIZE=$POOL -sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
+          if [ "$FS" = wasmfs ]; then
+            # WASMFS: no xterm-pty JS library (it patches the JS FS's TTY, which
+            # WASMFS does not have; linking it fails every configure link check,
+            # which is what made getloadavg collide). No TTY export either.
+            FS_FLAGS="-sWASMFS"
+            RUNTIME_EXPORTS="getTempRet0,setTempRet0,addFunction,removeFunction,FS"
+          else
+            FS_FLAGS="--js-library=/build/node_modules/xterm-pty/emscripten-pty.js"
+            RUNTIME_EXPORTS="getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS"
+          fi
+          EXTRA_CFLAGS="-O3 -g -Wno-error=unused-command-line-argument -matomics -mbulk-memory -DNDEBUG -DG_DISABLE_ASSERT -D_GNU_SOURCE -sASYNCIFY=1 -pthread -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=$POOL -sFORCE_FILESYSTEM -sALLOW_TABLE_GROWTH -sTOTAL_MEMORY=2300MB -sWASM_BIGINT -sMALLOC=mimalloc $FS_FLAGS -sASYNCIFY_IMPORTS=ffi_call_js"
+          docker exec qwbuild emconfigure /qemu/configure --static --target-list=x86_64-softmmu --cpu=wasm32 --cross-prefix= --without-default-features --enable-system --with-coroutine=fiber --enable-virtfs --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" --extra-ldflags="-sPTHREAD_POOL_SIZE=$POOL -sEXPORTED_RUNTIME_METHODS=$RUNTIME_EXPORTS"
           # Meson turns glib's "-pthread" into -sPTHREAD_POOL_SIZE=4 on the final
           # link, after every flag configure passes, and the last -s wins. emcc
           # appends EMCC_CFLAGS after all other arguments, so the requested pool
           # set there is the one the link uses.
-          docker exec -e EMCC_CFLAGS="-sPTHREAD_POOL_SIZE=$POOL" qwbuild emmake make -j"$(nproc)" qemu-system-x86_64
+          LINK_LAST="-sPTHREAD_POOL_SIZE=$POOL"
+          [ "$FS" = wasmfs ] && LINK_LAST="$LINK_LAST -sWASMFS"
+          docker exec -e EMCC_CFLAGS="$LINK_LAST" qwbuild emmake make -j"$(nproc)" qemu-system-x86_64
           # Which -s settings did the FINAL link really get? (the pool once came out 4)
           docker exec qwbuild emcc --version | head -1
           docker exec qwbuild sh -c 'grep -rIn "PTHREAD_POOL" /build/target 2>/dev/null | head -20; echo "pkg-config glib: $(PKG_CONFIG_PATH=/build/target/lib/pkgconfig pkg-config --static --libs glib-2.0)"' || true
           docker exec -w /build qwbuild sh -c 'ninja -t commands qemu-system-x86_64 | tail -1' > link-cmd.txt || true
-          tr ' ' '\n' < link-cmd.txt | grep -n 'POOL\|PROXY_TO_PTHREAD\|^-pthread\|response\|^@' || echo "no pool/proxy flags on the final link line"
+          tr ' ' '\n' < link-cmd.txt | grep -n 'POOL\|PROXY_TO_PTHREAD\|WASMFS\|^-pthread\|response\|^@' || echo "no pool/proxy flags on the final link line"
           wc -c link-cmd.txt
           mkdir -p out
           docker cp qwbuild:/build/qemu-system-x86_64.wasm out/
@@ -69,7 +98,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: link-diagnostics-pool${{ inputs.pool }}
+          name: link-diagnostics-${{ inputs.fs || 'memfs' }}-pool${{ inputs.pool }}
           path: |
             link-cmd.txt
             out/out.js
@@ -80,18 +109,33 @@ jobs:
           echo "requested pool $POOL, built glue preallocates '${GOT:-<none>}'"
           [ "$GOT" = "$POOL" ] || { echo "built out.js does not preallocate $POOL pthread workers"; exit 1; }
           sha256sum out/* | tee out/SHA256SUMS
+      - name: Which calls the glue proxies to the runtime thread (wasmfs must proxy no I/O)
+        run: |
+          set -euo pipefail
+          if [ "$FS" = wasmfs ]; then
+            python3 .github/wasm/proxied-calls.py out/out.js --forbid-io
+            grep -q '_wasmfs_' out/out.js || { echo "glue has no WASMFS runtime"; exit 1; }
+          else
+            python3 .github/wasm/proxied-calls.py out/out.js
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: qemu-wasm-x86_64-worker-pool${{ inputs.pool }}
+          name: qemu-wasm-x86_64-worker-${{ inputs.fs || 'memfs' }}-pool${{ inputs.pool }}
           path: out/
-      - name: Publish wasm-classic-pool${{ inputs.pool }}
+      - name: Publish the release
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          T="wasm-classic-pool$POOL"
+          if [ "$FS" = wasmfs ]; then
+            T="wasm-wasmfs-pool$POOL"
+            NOTE="WASMFS: file I/O stays in Wasm on the calling thread; the build verified the glue proxies no file/socket/tty I/O to the runtime thread. Console = -chardev wasmring, NIC = -netdev wasmring (rings announced via Module.ovmxRing; see include/qemu/wasm-ring.h). No xterm-pty TTY, no SOCKFS."
+          else
+            T="wasm-classic-pool$POOL"
+            NOTE="JS filesystem (MEMFS) with xterm-pty."
+          fi
           gh release create "$T" --repo "${{ github.repository }}" --target "${{ github.sha }}" \
-            --title "qemu-wasm x86_64 (classic, PROXY_TO_PTHREAD, pool=$POOL)" \
-            --notes "Built by build-wasm.yml run ${{ github.run_id }} from ${{ github.sha }}. PTHREAD_POOL_SIZE=$POOL at link time; the build verified out.js preallocates $POOL workers. SHA256SUMS attached." \
+            --title "qemu-wasm x86_64 ($FS, PROXY_TO_PTHREAD, pool=$POOL)" \
+            --notes "Built by build-wasm.yml run ${{ github.run_id }} from ${{ github.sha }}. PTHREAD_POOL_SIZE=$POOL at link time; the build verified out.js preallocates $POOL workers. $NOTE SHA256SUMS attached." \
             out/qemu-system-x86_64.wasm out/out.js out/qemu-system-x86_64.worker.js out/SHA256SUMS

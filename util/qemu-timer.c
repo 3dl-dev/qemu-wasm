@@ -332,6 +332,52 @@ int qemu_timeout_ns_to_ms(int64_t ns)
 /* qemu implementation of g_poll which uses a nanosecond timeout but is
  * otherwise identical to g_poll
  */
+#ifdef __EMSCRIPTEN__
+#include <emscripten/threading.h>
+/*
+ * Emscripten's poll() never waits: it reports what is ready now and ignores
+ * the timeout (JS FS and WASMFS alike), so QEMU's main loop spins, dropping
+ * and retaking the BQL as fast as it can and burning a core. With the JS FS
+ * every one of those polls was also proxied to the runtime thread. So wait
+ * here instead: poll without blocking, and if nothing is ready sleep on a
+ * futex until the timeout or until an event notifier is set
+ * (event_notifier_set calls qemu_poll_kick), which is how other threads wake
+ * the main loop. A wait never exceeds 10 ms, so a descriptor that becomes
+ * ready without a notifier (a JS FS tty) is still seen promptly.
+ */
+#define QEMU_POLL_MAX_WAIT_MS 10.0
+static uint32_t qemu_poll_seq;
+
+void qemu_poll_kick(void)
+{
+    qatomic_inc(&qemu_poll_seq);
+    emscripten_futex_wake(&qemu_poll_seq, INT_MAX);
+}
+
+int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
+{
+    int64_t deadline = timeout < 0 ? -1 : get_clock() + timeout;
+
+    for (;;) {
+        uint32_t seq = qatomic_load_acquire(&qemu_poll_seq);
+        int ret = g_poll(fds, nfds, 0);
+        double wait_ms = QEMU_POLL_MAX_WAIT_MS;
+
+        if (ret != 0 || timeout == 0) {
+            return ret;
+        }
+        if (deadline >= 0) {
+            int64_t left = deadline - get_clock();
+
+            if (left <= 0) {
+                return 0;
+            }
+            wait_ms = MIN(wait_ms, left / (double)SCALE_MS);
+        }
+        emscripten_futex_wait(&qemu_poll_seq, seq, wait_ms);
+    }
+}
+#else
 int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
 {
 #ifdef CONFIG_PPOLL
@@ -354,6 +400,7 @@ int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout)
     return g_poll(fds, nfds, qemu_timeout_ns_to_ms(timeout));
 #endif
 }
+#endif /* !__EMSCRIPTEN__ */
 
 
 void timer_init_full(QEMUTimer *ts,

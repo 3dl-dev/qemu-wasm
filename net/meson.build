@@ -13,6 +13,7 @@ system_ss.add(files(
   'socket.c',
   'stream.c',
   'dgram.c',
+  'wasmring.c',
   'util.c',
 ))
 
